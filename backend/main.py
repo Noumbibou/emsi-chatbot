@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
+from fastapi.middleware.cors import CORSMiddleware
 
 from config import COLLECTION, EMBEDDING_MODEL, LLM_MODEL, QDRANT_URL, TOP_K
 
@@ -27,7 +28,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EMSI ChatBot API", lifespan=lifespan)
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # développement uniquement, on restreindra plus tard
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class ChatRequest(BaseModel):
     question: str
