@@ -1,0 +1,35 @@
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+
+# Python / backend
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Données, base vectorielle, modèles IA
+backend/data/*
+!backend/data/.gitkeep
+qdrant_storage/
+models/
+*.gguf
+*.safetensors
+
+# Clés de signature Android
+*.jks
+*.keystore
+**/android/key.properties
+
+# Éditeurs et système
+.idea/
+*.iml
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
