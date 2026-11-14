@@ -5,3 +5,6 @@ pymupdf
 sentence-transformers
 qdrant-client
 python-dotenv
+fastapi
+uvicorn
+ollama
