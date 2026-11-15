@@ -35,7 +35,7 @@ class _ChatPageState extends State<ChatPage> {
       if (_scroll.hasClients) {
         _scroll.animateTo(
           _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 150),
           curve: Curves.easeOut,
         );
       }
@@ -46,32 +46,50 @@ class _ChatPageState extends State<ChatPage> {
     final question = _controller.text.trim();
     if (question.isEmpty || _loading) return;
 
+    // Bulle de réponse vide, remplie au fil du streaming.
+    final reply = ChatMessage(text: '', isUser: false);
     setState(() {
       _messages.add(ChatMessage(text: question, isUser: true));
+      _messages.add(reply);
       _loading = true;
     });
     _controller.clear();
     _scrollToBottom();
 
-    ChatMessage reply;
     try {
-      reply = await _api.ask(question);
+      await for (final chunk in _api.askStream(question)) {
+        if (!mounted) return;
+        setState(() {
+          if (chunk.token != null) reply.text += chunk.token!;
+          if (chunk.sources != null) reply.sources = chunk.sources!;
+        });
+        _scrollToBottom();
+      }
+      if (mounted && reply.text.trim().isEmpty) {
+        setState(() => reply.text = 'Je n’ai pas pu générer de réponse.');
+      }
     } on ChatApiException catch (e) {
-      reply = ChatMessage(text: e.message, isUser: false, isError: true);
+      _showError(reply, e.message);
     } catch (_) {
-      reply = ChatMessage(
-        text: 'Une erreur inattendue est survenue.',
-        isUser: false,
-        isError: true,
-      );
+      _showError(reply, 'Une erreur inattendue est survenue.');
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+        _scrollToBottom();
+      }
     }
+  }
 
+  void _showError(ChatMessage reply, String message) {
     if (!mounted) return;
     setState(() {
-      _messages.add(reply);
-      _loading = false;
+      if (reply.text.isEmpty) {
+        reply.text = message;
+        reply.isError = true;
+      } else {
+        reply.text = '${reply.text}\n\n[$message]';
+      }
     });
-    _scrollToBottom();
   }
 
   @override
@@ -84,10 +102,15 @@ class _ChatPageState extends State<ChatPage> {
             child: ListView.builder(
               controller: _scroll,
               padding: const EdgeInsets.all(12),
-              itemCount: _messages.length + (_loading ? 1 : 0),
+              itemCount: _messages.length,
               itemBuilder: (context, i) {
-                if (i == _messages.length) return const _TypingBubble();
-                return _MessageBubble(message: _messages[i]);
+                final m = _messages[i];
+                final waitingFirstToken = _loading &&
+                    i == _messages.length - 1 &&
+                    !m.isUser &&
+                    m.text.isEmpty;
+                if (waitingFirstToken) return const _TypingBubble();
+                return _MessageBubble(message: m);
               },
             ),
           ),
