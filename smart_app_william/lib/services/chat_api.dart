@@ -57,7 +57,11 @@ class ChatApi {
   }
 
   /// Version streaming : émet les sources puis les morceaux de texte.
-  Stream<ChatChunk> askStream(String question) async* {
+  /// [history] contient les échanges précédents (mémoire de conversation).
+  Stream<ChatChunk> askStream(
+    String question, {
+    List<ChatMessage> history = const [],
+  }) async* {
     final client = createHttpClient();
     try {
       final request = http.Request(
@@ -65,7 +69,16 @@ class ChatApi {
         Uri.parse('${ApiConfig.baseUrl}/chat/stream'),
       )
         ..headers['Content-Type'] = 'application/json; charset=utf-8'
-        ..body = jsonEncode({'question': question});
+        ..body = jsonEncode({
+          'question': question,
+          'history': history
+              .where((m) => !m.isError && m.text.trim().isNotEmpty)
+              .map((m) => {
+                    'role': m.isUser ? 'user' : 'assistant',
+                    'content': m.text,
+                  })
+              .toList(),
+        });
 
       final response =
           await client.send(request).timeout(const Duration(seconds: 180));

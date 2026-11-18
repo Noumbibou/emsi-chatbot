@@ -47,6 +47,12 @@ class _ChatPageState extends State<ChatPage> {
     if (question.isEmpty || _loading) return;
 
     // Bulle de réponse vide, remplie au fil du streaming.
+    // Historique envoyé au serveur : les échanges précédents, sans le message
+    // d'accueil. On le prépare AVANT d'ajouter la nouvelle question.
+    final past = _messages.skip(1).toList();
+    final history = past.length > 6 ? past.sublist(past.length - 6) : past;
+
+    // Bulle de réponse vide, remplie au fil du streaming.
     final reply = ChatMessage(text: '', isUser: false);
     setState(() {
       _messages.add(ChatMessage(text: question, isUser: true));
@@ -57,7 +63,7 @@ class _ChatPageState extends State<ChatPage> {
     _scrollToBottom();
 
     try {
-      await for (final chunk in _api.askStream(question)) {
+      await for (final chunk in _api.askStream(question, history: history)) {
         if (!mounted) return;
         setState(() {
           if (chunk.token != null) reply.text += chunk.token!;
@@ -95,7 +101,18 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('EMSI ChatBot')),
+            appBar: AppBar(
+        title: const Text('EMSI ChatBot'),
+        actions: [
+          IconButton(
+            tooltip: 'Nouvelle conversation',
+            icon: const Icon(Icons.refresh),
+            onPressed: _loading
+                ? null
+                : () => setState(() => _messages.removeRange(1, _messages.length)),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(

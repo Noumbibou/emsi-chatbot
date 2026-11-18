@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 
 from config import COLLECTION, EMBEDDING_MODEL, QDRANT_URL
 
-PDF_PATH = "data/brochure_emsi.pdf"
+PDF_PATH = "data/Brochure-EMSI.pdf"
 CHUNK_SIZE = 800   # caractères par chunk
 OVERLAP = 150      # chevauchement entre deux chunks
 
