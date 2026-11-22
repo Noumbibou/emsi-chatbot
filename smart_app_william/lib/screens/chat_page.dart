@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+
+import '../config/api_config.dart';
 import '../models/chat_models.dart';
 import '../services/chat_api.dart';
 
@@ -12,6 +16,7 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final _api = ChatApi();
+  final _picker = ImagePicker();
   final _controller = TextEditingController();
   final _scroll = ScrollController();
   final List<ChatMessage> _messages = [
@@ -22,6 +27,7 @@ class _ChatPageState extends State<ChatPage> {
     ),
   ];
   bool _loading = false;
+  Uint8List? _selectedImageBytes;
 
   @override
   void dispose() {
@@ -42,32 +48,56 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  Future<void> _pickImage() async {
+    if (_loading) return;
+    final XFile? picked = await _picker.pickImage(source: ImageSource.gallery);
+    if (picked == null) return;
+    final bytes = await picked.readAsBytes();
+    if (!mounted) return;
+    setState(() => _selectedImageBytes = bytes);
+  }
+
   Future<void> _send() async {
     final question = _controller.text.trim();
-    if (question.isEmpty || _loading) return;
+    final imageToSend = _selectedImageBytes;
 
-    // Bulle de réponse vide, remplie au fil du streaming.
-    // Historique envoyé au serveur : les échanges précédents, sans le message
-    // d'accueil. On le prépare AVANT d'ajouter la nouvelle question.
+    // On autorise l'envoi si on a du texte OU une image
+    if ((question.isEmpty && imageToSend == null) || _loading) return;
+
     final past = _messages.skip(1).toList();
     final history = past.length > 6 ? past.sublist(past.length - 6) : past;
 
-    // Bulle de réponse vide, remplie au fil du streaming.
+    final displayQuestion = question.isNotEmpty
+        ? question
+        : 'Analyse cette image par rapport à la brochure EMSI.';
+
     final reply = ChatMessage(text: '', isUser: false);
     setState(() {
-      _messages.add(ChatMessage(text: question, isUser: true));
+      _messages.add(
+        ChatMessage(
+          text: displayQuestion,
+          isUser: true,
+          userImageBytes: imageToSend,
+        ),
+      );
       _messages.add(reply);
       _loading = true;
+      _selectedImageBytes = null;
     });
     _controller.clear();
     _scrollToBottom();
 
     try {
-      await for (final chunk in _api.askStream(question, history: history)) {
+      await for (final chunk in _api.askStream(
+        question,
+        history: history,
+        imageBytes: imageToSend,
+      )) {
         if (!mounted) return;
         setState(() {
           if (chunk.token != null) reply.text += chunk.token!;
           if (chunk.sources != null) reply.sources = chunk.sources!;
+          if (chunk.images != null) reply.images = chunk.images!;
         });
         _scrollToBottom();
       }
@@ -101,7 +131,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-            appBar: AppBar(
+      appBar: AppBar(
         title: const Text('EMSI ChatBot'),
         actions: [
           IconButton(
@@ -109,7 +139,10 @@ class _ChatPageState extends State<ChatPage> {
             icon: const Icon(Icons.refresh),
             onPressed: _loading
                 ? null
-                : () => setState(() => _messages.removeRange(1, _messages.length)),
+                : () => setState(() {
+                      _messages.removeRange(1, _messages.length);
+                      _selectedImageBytes = null;
+                    }),
           ),
         ],
       ),
@@ -125,17 +158,53 @@ class _ChatPageState extends State<ChatPage> {
                 final waitingFirstToken = _loading &&
                     i == _messages.length - 1 &&
                     !m.isUser &&
-                    m.text.isEmpty;
+                    m.text.isEmpty &&
+                    m.images.isEmpty;
                 if (waitingFirstToken) return const _TypingBubble();
                 return _MessageBubble(message: m);
               },
             ),
           ),
+          if (_selectedImageBytes != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              alignment: Alignment.centerLeft,
+              child: Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(
+                      _selectedImageBytes!,
+                      height: 80,
+                      width: 80,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  Positioned(
+                    top: 0,
+                    right: 0,
+                    child: GestureDetector(
+                      onTap: () => setState(() => _selectedImageBytes = null),
+                      child: const CircleAvatar(
+                        radius: 11,
+                        backgroundColor: Colors.black54,
+                        child: Icon(Icons.close, size: 14, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
               child: Row(
                 children: [
+                  IconButton(
+                    tooltip: 'Choisir une image',
+                    onPressed: _loading ? null : _pickImage,
+                    icon: const Icon(Icons.image_outlined),
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _controller,
@@ -209,7 +278,59 @@ class _MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SelectableText(message.text, style: TextStyle(color: fg)),
+            if (message.userImageBytes != null) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.memory(
+                  message.userImageBytes!,
+                  height: 160,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (message.text.isNotEmpty)
+              SelectableText(message.text, style: TextStyle(color: fg)),
+            if (message.images.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: message.images.map((img) {
+                  final imgUrl = '${ApiConfig.baseUrl}${img.url}';
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.network(
+                          imgUrl,
+                          height: 130,
+                          width: 180,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            height: 130,
+                            width: 180,
+                            color: Colors.black12,
+                            alignment: Alignment.center,
+                            child: const Text('Image indisponible'),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Page ${img.page} (${img.file})',
+                        style: TextStyle(
+                          color: fg.withValues(alpha: 0.75),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ],
             if (message.sources.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(

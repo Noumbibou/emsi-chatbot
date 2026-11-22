@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -58,27 +59,35 @@ class ChatApi {
 
   /// Version streaming : émet les sources puis les morceaux de texte.
   /// [history] contient les échanges précédents (mémoire de conversation).
-  Stream<ChatChunk> askStream(
+Stream<ChatChunk> askStream(
     String question, {
     List<ChatMessage> history = const [],
+    Uint8List? imageBytes,
   }) async* {
     final client = createHttpClient();
     try {
+      final payload = <String, dynamic>{
+        'question': question.isEmpty && imageBytes != null
+            ? 'Décris cette image et donne les informations liées dans la brochure EMSI.'
+            : question,
+        'history': history
+            .where((m) => !m.isError && m.text.trim().isNotEmpty)
+            .map((m) => {
+                  'role': m.isUser ? 'user' : 'assistant',
+                  'content': m.text,
+                })
+            .toList(),
+      };
+      if (imageBytes != null) {
+        payload['image_base64'] = base64Encode(imageBytes);
+      }
+
       final request = http.Request(
         'POST',
         Uri.parse('${ApiConfig.baseUrl}/chat/stream'),
       )
         ..headers['Content-Type'] = 'application/json; charset=utf-8'
-        ..body = jsonEncode({
-          'question': question,
-          'history': history
-              .where((m) => !m.isError && m.text.trim().isNotEmpty)
-              .map((m) => {
-                    'role': m.isUser ? 'user' : 'assistant',
-                    'content': m.text,
-                  })
-              .toList(),
-        });
+        ..body = jsonEncode(payload);
 
       final response =
           await client.send(request).timeout(const Duration(seconds: 180));
@@ -107,6 +116,12 @@ class ChatApi {
             yield ChatChunk(token: event['content'] as String);
           case 'error':
             throw ChatApiException(event['message'] as String);
+          case 'images':
+            yield ChatChunk(
+              images: (event['images'] as List)
+                  .map((i) => ImageResult.fromJson(i as Map<String, dynamic>))
+                  .toList(),
+            );
           case 'done':
             return;
         }
