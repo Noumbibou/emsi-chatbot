@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'screens/chat_page.dart';
+import 'screens/chat_intro_page.dart';
 import 'screens/home_page.dart';
 import 'screens/login_page.dart';
 import 'screens/register_page.dart';
@@ -71,6 +72,7 @@ class MyApp extends StatelessWidget {
         '/login': (context) => LoginPage(),
         '/register': (context) => RegisterPage(),
         '/home': (context) => HomePage(),
+        '/chat-intro': (context) => const ChatIntroPage(),
         '/chat': (context) => const ChatPage(),
       },
     );

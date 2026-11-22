@@ -1,10 +1,13 @@
 import base64
+import gc
 import io
 import json
 import re
 import time
+import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import RLock
 from typing import Literal
 
 import ollama
@@ -22,6 +25,7 @@ from config import (
     COLLECTION,
     EMBEDDING_MODEL,
     IMAGE_COLLECTION,
+    IMAGE_CAPTION_COLLECTION,
     IMAGE_MODEL,
     LLM_MODEL,
     QDRANT_URL,
@@ -33,9 +37,10 @@ SYSTEM_PROMPT = (
     "Tu es l'assistant officiel de l'EMSI (École Marocaine des Sciences de l'Ingénieur). "
     "Réponds en français, de façon claire et concise, en te basant UNIQUEMENT sur le "
     "contexte fourni. Tu peux utiliser l'historique de la conversation pour comprendre "
-    "les questions de suivi, mais les faits doivent venir du contexte. Si l'information "
-    "n'est pas dans le contexte, dis que tu ne la trouves pas dans la brochure. "
-    "N'invente rien."
+    "les questions de suivi, mais les faits doivent venir du contexte. Recopie les noms "
+    "propres EXACTEMENT comme ils sont écrits dans le contexte, lettre par lettre. "
+    "Si l'information n'est pas dans le contexte, dis que tu ne la trouves pas dans "
+    "la brochure. N'invente rien."
 )
 
 GREETINGS = re.compile(
@@ -43,6 +48,23 @@ GREETINGS = re.compile(
 )
 GREETING_ANSWER = (
     "Bonjour ! Posez-moi une question sur l'EMSI : filières, admission, campus…"
+)
+
+# Les images ne sont recherchées que si la question les demande.
+VISUAL_REQUEST = re.compile(
+    r"\b(photos?|images?|illustrations?|logos?|montre[rz]?(?:-moi)?|affiche[rz]?|voir)\b",
+    re.IGNORECASE,
+)
+
+# Au pluriel ("les photos des labos"), plusieurs images ; sinon une seule.
+PLURAL_VISUAL = re.compile(
+    r"\b(photos|images|logos|illustrations|plusieurs|quelques|toutes|tous)\b",
+    re.IGNORECASE,
+)
+
+NO_MATCH_ANSWER = (
+    "Je ne retrouve pas cette image dans la brochure. Je ne reconnais pas les "
+    "visages : je compare seulement avec les images de la brochure."
 )
 
 OLLAMA_OPTIONS = {"num_ctx": 3072, "num_predict": 250, "temperature": 0.2}
@@ -53,18 +75,36 @@ MAX_HISTORY_CHARS = 400  # par message
 SHORT_QUESTION_WORDS = 8  # en dessous, la question est complétée pour la recherche
 
 IMAGES_DIR = Path("data/images")
-IMAGE_TOP_K = 3
-IMAGE_MIN_SCORE = 0.22
+IMAGE_TOP_K = 4  # nombre maximal d'images (demande au pluriel)
+IMAGE_MIN_SCORE = 0.22  # seuil texte -> image (CLIP)
+IMAGE_MATCH_STRONG = 0.90  # seuil image -> image : "c'est la même image"
+CAPTION_MIN_SCORE = 0.45  # seuil texte -> légende d'image (BGE-M3), à calibrer
+CAPTION_STRONG = 0.55  # légende très proche de la question (ex. nom + titre)
+CAPTION_MARGIN = 0.02  # écart minimal avec la légende suivante pour trancher seule
 RRF_K = 60
 
 state = {}
+model_lock = RLock()
+
+
+def get_model(key: str, name: str) -> SentenceTransformer:
+    """Charge un modèle à la première utilisation seulement (économise la RAM)."""
+    with model_lock:
+        if key not in state:
+            other_clip_model = {
+                "clip_text": "clip_image",
+                "clip_image": "clip_text",
+            }.get(key)
+            if other_clip_model in state:
+                del state[other_clip_model]
+                gc.collect()
+            state[key] = SentenceTransformer(name)
+        return state[key]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state["embedder"] = SentenceTransformer(EMBEDDING_MODEL)
-    state["clip_text"] = SentenceTransformer(TEXT_IMAGE_MODEL)
-    state["clip_image"] = SentenceTransformer(IMAGE_MODEL)
     state["qdrant"] = QdrantClient(url=QDRANT_URL)
     yield
     state.clear()
@@ -144,21 +184,38 @@ def retrieve_text(query: str):
 
 
 def retrieve_images(query: str):
-    """Retrieval multimodal : texte -> vecteur CLIP -> images proches dans Qdrant."""
+    """Retrieval texte -> image : texte -> vecteur CLIP -> images proches."""
     if not state["qdrant"].collection_exists(IMAGE_COLLECTION):
         return []
-    vec = state["clip_text"].encode(query, normalize_embeddings=True).tolist()
+    with model_lock:
+        model = get_model("clip_text", TEXT_IMAGE_MODEL)
+        vec = model.encode(query, normalize_embeddings=True).tolist()
+        del model
     result = state["qdrant"].query_points(
         collection_name=IMAGE_COLLECTION, query=vec, limit=IMAGE_TOP_K
     )
     return [p for p in result.points if p.score >= IMAGE_MIN_SCORE]
 
 
+def retrieve_image_captions(query: str):
+    """Retrieval texte -> légendes : BGE-M3 sur le texte qui accompagne chaque image."""
+    if not state["qdrant"].collection_exists(IMAGE_CAPTION_COLLECTION):
+        return []
+    vec = state["embedder"].encode(query, normalize_embeddings=True).tolist()
+    result = state["qdrant"].query_points(
+        collection_name=IMAGE_CAPTION_COLLECTION, query=vec, limit=IMAGE_TOP_K * 2
+    )
+    return [p for p in result.points if p.score >= CAPTION_MIN_SCORE]
+
+
 def retrieve_by_image(img: Image.Image):
-    """Retrieval image -> image : image -> vecteur CLIP vision -> images proches."""
+    """Retrieval image -> image : image -> vecteur CLIP -> images proches."""
     if not state["qdrant"].collection_exists(IMAGE_COLLECTION):
         return []
-    vec = state["clip_image"].encode(img, normalize_embeddings=True).tolist()
+    with model_lock:
+        model = get_model("clip_image", IMAGE_MODEL)
+        vec = model.encode(img, normalize_embeddings=True).tolist()
+        del model
     result = state["qdrant"].query_points(
         collection_name=IMAGE_COLLECTION, query=vec, limit=IMAGE_TOP_K
     )
@@ -174,20 +231,18 @@ def rrf_fuse(*ranked_lists, k: int = RRF_K) -> dict[str, float]:
     return dict(sorted(scores.items(), key=lambda kv: kv[1], reverse=True))
 
 
-def fuse_and_rank(text_points, image_points):
-    """Combine les classements texte et image via RRF pour prioriser les pages/résultats."""
-    text_keys = [f"page:{p.payload['page']}" for p in text_points]
-    image_keys = [f"page:{p.payload['page']}" for p in image_points]
-    page_rrf = rrf_fuse(text_keys, image_keys, k=RRF_K)
+def fuse_image_results(clip_points, caption_points):
+    """Fusionne par RRF le classement CLIP (apparence) et celui des légendes (texte).
 
-    ranked_images = []
-    for p in image_points:
-        page_key = f"page:{p.payload['page']}"
-        rrf_val = page_rrf.get(page_key, 0.0) + (p.score * 0.01)
-        ranked_images.append((rrf_val, p))
-
-    ranked_images.sort(key=lambda pair: pair[0], reverse=True)
-    return ranked_images
+    Les légendes comptent double : l'apparence seule ne dit pas qui est une personne.
+    """
+    by_file = {}
+    for p in [*clip_points, *caption_points]:
+        by_file.setdefault(p.payload["file"], p)
+    clip_keys = [p.payload["file"] for p in clip_points]
+    caption_keys = [p.payload["file"] for p in caption_points]
+    fused = rrf_fuse(clip_keys, caption_keys, caption_keys)
+    return [(score, by_file[name]) for name, score in fused.items()][:IMAGE_TOP_K]
 
 
 def retrieval_query(question: str, history: list[HistoryMessage]) -> str:
@@ -213,21 +268,43 @@ def build_messages(
     text_context = "\n\n".join(
         f"[Page {p.payload['page']}] {p.payload['text']}" for p in text_points
     )
-    image_context = "\n".join(
-        f"[Image page {p.payload['page']} - {p.payload['file']}] "
-        f"Contexte visuel : {p.payload.get('context', '')}"
-        for p in image_points
-    )
-    full_context = text_context
-    if image_context:
-        full_context = f"{text_context}\n\nIllustrations pertinentes :\n{image_context}"
+    image_contexts = []
+    for point in image_points:
+        context = point.payload.get("context") or ""
+        image_contexts.append(
+            f"[Illustration page {point.payload['page']} - {point.payload['file']}]\n"
+            f"Contexte complet associé : {context or '(aucun texte associé)'}"
+        )
+
+    image_instructions = ""
+    if image_points:
+        image_instructions = (
+            "\n\nDes illustrations pertinentes sont incluses dans les résultats "
+            "d'image de la réponse et affichées directement à l'utilisateur dans "
+            "l'interface. Elles existent donc bien, même si leurs pixels ne sont "
+            "pas envoyés dans ce prompt. Appuie-toi sur leurs contextes complets "
+            "et sur les extraits textuels pour les présenter. Ne dis jamais qu'il "
+            "n'y a pas de photo ou d'image lorsqu'une illustration est listée. "
+            "N'attribue une identité à une personne que si le contexte de la "
+            "brochure associe explicitement cette personne à l'illustration."
+        )
+
+    sections = [f"Extraits textuels :\n{text_context or '(aucun extrait pertinent)'}"]
+    if image_contexts:
+        sections.append(
+            "Illustrations pertinentes (jointes à la réponse et affichées dans "
+            "l'interface) :\n" + "\n\n".join(image_contexts)
+        )
+    full_context = "\n\n".join(sections)
 
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_PROMPT + image_instructions},
         *recent_history(history),
         {
             "role": "user",
-            "content": f"Contexte :\n{full_context}\n\nQuestion : {question}",
+            "content": (
+                f"Contexte documentaire :\n{full_context}\n\nQuestion : {question}"
+            ),
         },
     ]
 
@@ -256,24 +333,90 @@ def to_images(ranked_images) -> list[ImageResult]:
     return results
 
 
+def strong_uploaded_image_match(image_points):
+    """Renvoie la meilleure correspondance de brochure si elle est assez forte."""
+    best = image_points[0] if image_points else None
+    score = best.score if best is not None else 0.0
+    print(
+        f"[image] meilleur score image->image = {score:.3f} "
+        f"(seuil {IMAGE_MATCH_STRONG})"
+    )
+
+    if best is None or best.score < IMAGE_MATCH_STRONG:
+        return None
+    return best
+
+
+def build_uploaded_image_messages(
+    question: str, image_point, history: list[HistoryMessage]
+) -> list[dict]:
+    context = image_point.payload.get("context") or ""
+    system_prompt = (
+        SYSTEM_PROMPT
+        + "\n\nL'utilisateur a envoyé une image qui correspond fortement à une "
+        "illustration de la brochure. Réponds avec un texte bref, fluide et "
+        "naturel, jamais en recopiant le contexte brut. Présente ce que montre "
+        "l'illustration en t'appuyant exclusivement sur son contexte. Précise "
+        "brièvement qu'il s'agit d'une correspondance avec une illustration de "
+        "la brochure. Ne prétends pas reconnaître un visage et n'invente aucune "
+        "identité."
+    )
+    user_prompt = (
+        f"L'image envoyée correspond à l'illustration "
+        f"{image_point.payload['file']} de la page "
+        f"{image_point.payload['page']} de la brochure EMSI. Cette illustration "
+        "est jointe à la réponse et affichée à l'utilisateur.\n\n"
+        "Contexte complet associé à cette illustration :\n"
+        f"{context or '(aucun texte associé dans la brochure)'}\n\n"
+        f"Question de l'utilisateur : {question}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        *recent_history(history),
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def clear_caption_match(caption_points) -> bool:
+    """Vrai si une légende répond nettement à la question (ex. un nom + un titre)."""
+    if not caption_points:
+        return False
+    best = caption_points[0].score
+    second = caption_points[1].score if len(caption_points) > 1 else 0.0
+    return best >= CAPTION_STRONG and best - second >= CAPTION_MARGIN
+
+
 def run_retrieval(req: ChatRequest):
+    # Photo envoyée : on cherche seulement des images proches, sans recherche texte.
+    if req.image_base64:
+        image_points = retrieve_by_image(decode_base64_image(req.image_base64))
+        return [], image_points, []
+
     q = retrieval_query(req.question, req.history)
     text_points = retrieve_text(q)
 
-    if req.image_base64:
-        img = decode_base64_image(req.image_base64)
-        image_points = retrieve_by_image(img)
-        # Si la question est courte/générique avec une image, on complète la recherche texte
-        # avec le contexte des images trouvées
-        img_contexts = " ".join(
-            p.payload.get("context", "") for p in image_points if p.payload.get("context")
-        )
-        if img_contexts:
-            text_points = retrieve_text(f"{q} {img_contexts[:250]}")
-    else:
-        image_points = retrieve_images(q)
+    ranked_images = []
+    # Les images ne sont cherchées que si la question les demande.
+    if VISUAL_REQUEST.search(req.question):
+        plural = bool(PLURAL_VISUAL.search(req.question))
+        caption_points = retrieve_image_captions(q)
 
-    ranked_images = fuse_and_rank(text_points, image_points)
+        if not plural and clear_caption_match(caption_points):
+            # Une légende répond nettement (nom, titre) : on la garde seule.
+            ranked_images = [(caption_points[0].score, caption_points[0])]
+            mode = "légende nette"
+        else:
+            clip_points = retrieve_images(q)
+            limit = IMAGE_TOP_K if plural else 1
+            ranked_images = fuse_image_results(clip_points, caption_points)[:limit]
+            mode = "fusion RRF"
+
+        print(
+            f"[images] mode={mode} | "
+            f"légendes={[round(p.score, 2) for p in caption_points]} | "
+            f"retenues={[p.payload['file'] for _, p in ranked_images]}"
+        )
+    image_points = [p for _, p in ranked_images]
     return text_points, image_points, ranked_images
 
 
@@ -294,6 +437,23 @@ def chat(req: ChatRequest):
         return ChatResponse(answer=GREETING_ANSWER, sources=[], images=[])
 
     text_points, image_points, ranked_images = run_retrieval(req)
+
+    if req.image_base64:
+        best = strong_uploaded_image_match(image_points)
+        if best is None:
+            return ChatResponse(answer=NO_MATCH_ANSWER, sources=[], images=[])
+
+        response = ollama.chat(
+            model=LLM_MODEL,
+            messages=build_uploaded_image_messages(req.question, best, req.history),
+            options=OLLAMA_OPTIONS,
+            keep_alive=KEEP_ALIVE,
+        )
+        return ChatResponse(
+            answer=response["message"]["content"],
+            sources=[],
+            images=to_images([(best.score, best)]),
+        )
 
     response = ollama.chat(
         model=LLM_MODEL,
@@ -324,6 +484,42 @@ def chat_stream(req: ChatRequest):
             t0 = time.perf_counter()
             text_points, image_points, ranked_images = run_retrieval(req)
             t1 = time.perf_counter()
+
+            if req.image_base64:
+                best = strong_uploaded_image_match(image_points)
+                images = to_images([(best.score, best)]) if best is not None else []
+                yield ndjson({"type": "sources", "sources": []})
+                yield ndjson(
+                    {"type": "images", "images": [i.model_dump() for i in images]}
+                )
+
+                first_token_at = None
+                if best is None:
+                    yield ndjson({"type": "token", "content": NO_MATCH_ANSWER})
+                else:
+                    for chunk in ollama.chat(
+                        model=LLM_MODEL,
+                        messages=build_uploaded_image_messages(
+                            req.question, best, req.history
+                        ),
+                        options=OLLAMA_OPTIONS,
+                        keep_alive=KEEP_ALIVE,
+                        stream=True,
+                    ):
+                        content = chunk["message"]["content"]
+                        if content:
+                            if first_token_at is None:
+                                first_token_at = time.perf_counter()
+                            yield ndjson({"type": "token", "content": content})
+
+                t2 = time.perf_counter()
+                first = f"{first_token_at - t0:.1f}s" if first_token_at else "?"
+                print(
+                    f"[perf] image : recherche={t1 - t0:.1f}s | "
+                    f"premier token={first} | total={t2 - t0:.1f}s"
+                )
+                yield ndjson({"type": "done"})
+                return
 
             yield ndjson(
                 {
@@ -364,6 +560,7 @@ def chat_stream(req: ChatRequest):
             yield ndjson({"type": "done"})
         except Exception as e:
             print(f"[stream] erreur : {e}")
+            traceback.print_exc()
             yield ndjson({"type": "error", "message": "Erreur pendant la génération."})
 
     return StreamingResponse(

@@ -104,7 +104,7 @@ class _HomePageState extends State<HomePage> {
                 title: 'EMSI ChatBot',
                 onTap: () {
                   Navigator.pop(context);
-                  Navigator.pushNamed(context, '/chat');
+                  Navigator.pushNamed(context, '/chat-intro');
                 },
               ),
               const Padding(
@@ -192,7 +192,8 @@ class _HomePageState extends State<HomePage> {
                   ),
                   const SizedBox(height: 22),
                   FilledButton.tonalIcon(
-                    onPressed: () => Navigator.pushNamed(context, '/chat'),
+                    onPressed: () =>
+                        Navigator.pushNamed(context, '/chat-intro'),
                     style: FilledButton.styleFrom(
                       foregroundColor: const Color(0xFF006B5F),
                       backgroundColor: Colors.white,

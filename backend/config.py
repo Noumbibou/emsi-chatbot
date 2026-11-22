@@ -25,3 +25,4 @@ IMAGE_MODEL = os.getenv("IMAGE_MODEL", "clip-ViT-B-32")
 TEXT_IMAGE_MODEL = os.getenv(
     "TEXT_IMAGE_MODEL", "sentence-transformers/clip-ViT-B-32-multilingual-v1"
 )
+IMAGE_CAPTION_COLLECTION = os.getenv("IMAGE_CAPTION_COLLECTION", "emsi_image_captions")
