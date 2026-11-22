@@ -19,3 +19,9 @@ COLLECTION = os.getenv("QDRANT_COLLECTION", "emsi_text")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:3b")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 TOP_K = int(os.getenv("TOP_K", "5"))
+
+IMAGE_COLLECTION = os.getenv("IMAGE_COLLECTION", "emsi_images")
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "clip-ViT-B-32")
+TEXT_IMAGE_MODEL = os.getenv(
+    "TEXT_IMAGE_MODEL", "sentence-transformers/clip-ViT-B-32-multilingual-v1"
+)
