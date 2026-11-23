@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -235,12 +236,43 @@ class _LoginPageState extends State<LoginPage> {
                 SizedBox(
                   height: 52,
                   child: FilledButton.icon(
-                    onPressed: () {
+                    onPressed: () async {
                       if (_formKey.currentState!.validate()) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Connexion en cours')),
-                        );
-                        Navigator.pushNamed(context, '/home');
+                        try {
+                          final response = await Supabase.instance.client.auth
+                              .signInWithPassword(
+                                email: _emailController.text.trim(),
+                                password: _passwordController.text,
+                              );
+                          if (!context.mounted) return;
+                          final email =
+                              response.user?.email ??
+                              _emailController.text.trim();
+                          Navigator.pushNamedAndRemoveUntil(
+                            context,
+                            '/home',
+                            (route) => false,
+                            arguments: email,
+                          );
+                        } on AuthException catch (error) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(error.message),
+                              backgroundColor: const Color(0xFF8A2821),
+                            ),
+                          );
+                        } catch (_) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Impossible de se connecter à Supabase.',
+                              ),
+                              backgroundColor: Color(0xFF8A2821),
+                            ),
+                          );
+                        }
                       }
                     },
                     icon: const Icon(Icons.login),

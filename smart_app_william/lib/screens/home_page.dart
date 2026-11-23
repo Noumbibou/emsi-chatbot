@@ -1,13 +1,40 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, this.email = ''});
+
+  final String email;
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
+  String get _email {
+    try {
+      return Supabase.instance.client.auth.currentUser?.email ??
+          widget.email.trim();
+    } catch (_) {
+      return widget.email.trim();
+    }
+  }
+
+  String get _displayName {
+    final localPart = _email.split('@').first.trim();
+    if (localPart.isEmpty) return 'Utilisateur';
+    final normalized = localPart.replaceAll(RegExp(r'[._-]+'), ' ').trim();
+    if (normalized.isEmpty) return 'Utilisateur';
+    return normalized
+        .split(RegExp(r'\s+'))
+        .map(
+          (word) => word.isEmpty
+              ? word
+              : '${word[0].toUpperCase()}${word.substring(1)}',
+        )
+        .join(' ');
+  }
+
   @override
   Widget build(BuildContext context) {
     const ink = Color(0xFF17323B);
@@ -55,9 +82,9 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    const Text(
-                      'Mohammed Bousmah',
-                      style: TextStyle(
+                    Text(
+                      _displayName,
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 17,
                         fontWeight: FontWeight.w700,
@@ -65,7 +92,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'john.doe@example.com',
+                      _email.isEmpty ? 'Non connecté' : _email,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.78),
                         fontSize: 13,
@@ -116,17 +143,23 @@ class _HomePageState extends State<HomePage> {
                 title: 'Profil',
                 onTap: () => Navigator.pop(context),
               ),
-              _DrawerItem(
-                icon: Icons.settings_outlined,
-                title: 'Paramètres',
-                trailing: const Icon(Icons.chevron_right, size: 20),
-                onTap: () => Navigator.pop(context),
-              ),
               const Spacer(),
               _DrawerItem(
                 icon: Icons.logout_rounded,
                 title: 'Déconnexion',
-                onTap: () => Navigator.pop(context),
+                onTap: () async {
+                  try {
+                    await Supabase.instance.client.auth.signOut();
+                  } catch (_) {
+                    // Retourne à la connexion même si le serveur est inaccessible.
+                  }
+                  if (!context.mounted) return;
+                  Navigator.pushNamedAndRemoveUntil(
+                    context,
+                    '/login',
+                    (route) => false,
+                  );
+                },
               ),
               const SizedBox(height: 12),
             ],
@@ -138,7 +171,7 @@ class _HomePageState extends State<HomePage> {
           padding: const EdgeInsets.all(22),
           children: [
             Text(
-              'Bonjour Mohammed 👋',
+              'Bonjour $_displayName 👋',
               style: Theme.of(context).textTheme.headlineSmall
                   ?.copyWith(color: ink, fontWeight: FontWeight.w800),
             ),
@@ -242,14 +275,12 @@ class _DrawerItem extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.selected = false,
-    this.trailing,
   });
 
   final IconData icon;
   final String title;
   final VoidCallback onTap;
   final bool selected;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -269,7 +300,6 @@ class _DrawerItem extends StatelessWidget {
             fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
           ),
         ),
-        trailing: trailing,
       ),
     );
   }

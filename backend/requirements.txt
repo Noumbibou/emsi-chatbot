@@ -10,3 +10,4 @@ uvicorn
 ollama
 pillow
 numpy
+pyflakes

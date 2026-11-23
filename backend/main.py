@@ -346,6 +346,25 @@ def strong_uploaded_image_match(image_points):
         return None
     return best
 
+def uploaded_image_answer(best) -> str:
+    """Réponse fixe (sans LLM) pour une photo reconnue : la légende vient de la brochure."""
+    page = best.payload["page"]
+    parts = [
+        p.strip()
+        for p in (best.payload.get("context") or "").split(" | ")
+        if p.strip()
+    ]
+    caption = " — ".join(p[:120] for p in parts[:2])
+
+    answer = f"Cette image correspond à une image de la page {page} de la brochure EMSI."
+    if caption:
+        answer += f" La brochure l'accompagne de ce texte : « {caption} »."
+    answer += (
+        "\n\n(Il s'agit d'une correspondance avec une image de la brochure, "
+        "pas d'une reconnaissance faciale.)"
+    )
+    return answer
+
 
 def build_uploaded_image_messages(
     question: str, image_point, history: list[HistoryMessage]
@@ -442,15 +461,8 @@ def chat(req: ChatRequest):
         best = strong_uploaded_image_match(image_points)
         if best is None:
             return ChatResponse(answer=NO_MATCH_ANSWER, sources=[], images=[])
-
-        response = ollama.chat(
-            model=LLM_MODEL,
-            messages=build_uploaded_image_messages(req.question, best, req.history),
-            options=OLLAMA_OPTIONS,
-            keep_alive=KEEP_ALIVE,
-        )
         return ChatResponse(
-            answer=response["message"]["content"],
+            answer=uploaded_image_answer(best),
             sources=[],
             images=to_images([(best.score, best)]),
         )
@@ -488,37 +500,16 @@ def chat_stream(req: ChatRequest):
             if req.image_base64:
                 best = strong_uploaded_image_match(image_points)
                 images = to_images([(best.score, best)]) if best is not None else []
+                answer = (
+                    NO_MATCH_ANSWER if best is None else uploaded_image_answer(best)
+                )
                 yield ndjson({"type": "sources", "sources": []})
                 yield ndjson(
                     {"type": "images", "images": [i.model_dump() for i in images]}
                 )
-
-                first_token_at = None
-                if best is None:
-                    yield ndjson({"type": "token", "content": NO_MATCH_ANSWER})
-                else:
-                    for chunk in ollama.chat(
-                        model=LLM_MODEL,
-                        messages=build_uploaded_image_messages(
-                            req.question, best, req.history
-                        ),
-                        options=OLLAMA_OPTIONS,
-                        keep_alive=KEEP_ALIVE,
-                        stream=True,
-                    ):
-                        content = chunk["message"]["content"]
-                        if content:
-                            if first_token_at is None:
-                                first_token_at = time.perf_counter()
-                            yield ndjson({"type": "token", "content": content})
-
-                t2 = time.perf_counter()
-                first = f"{first_token_at - t0:.1f}s" if first_token_at else "?"
-                print(
-                    f"[perf] image : recherche={t1 - t0:.1f}s | "
-                    f"premier token={first} | total={t2 - t0:.1f}s"
-                )
+                yield ndjson({"type": "token", "content": answer})
                 yield ndjson({"type": "done"})
+                print(f"[perf] image : recherche={t1 - t0:.1f}s")
                 return
 
             yield ndjson(

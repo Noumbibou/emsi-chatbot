@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:smart_app_william/screens/chat_intro_page.dart';
+import 'package:smart_app_william/screens/home_page.dart';
 import 'package:smart_app_william/main.dart';
 
 void main() {
@@ -36,5 +37,38 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Chat prêt'), findsOneWidget);
+  });
+
+  testWidgets('affiche l’e-mail connecté dans le drawer', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: HomePage(email: 'alice.test@emsi.ma')),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pumpAndSettle();
+
+    expect(find.text('alice.test@emsi.ma'), findsOneWidget);
+    expect(find.text('Alice Test'), findsOneWidget);
+    expect(find.text('Paramètres'), findsNothing);
+  });
+
+  testWidgets('la déconnexion ramène à la connexion', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: const HomePage(email: 'alice.test@emsi.ma'),
+        routes: {
+          '/login': (_) => const Scaffold(body: Text('Page de connexion')),
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Déconnexion'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Page de connexion'), findsOneWidget);
   });
 }

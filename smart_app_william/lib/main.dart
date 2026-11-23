@@ -1,12 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'config/supabase_config.dart';
 import 'screens/chat_page.dart';
 import 'screens/chat_intro_page.dart';
 import 'screens/home_page.dart';
 import 'screens/login_page.dart';
 import 'screens/register_page.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: '.env', isOptional: true);
+
+  if (!SupabaseConfig.isConfigured) {
+    throw StateError(
+      'Configuration Supabase manquante : ajoute SUPABASE_URL et '
+      'SUPABASE_ANON_KEY dans .env.',
+    );
+  }
+
+  await Supabase.initialize(
+    url: SupabaseConfig.url,
+    publishableKey: SupabaseConfig.anonKey,
+  );
+
   runApp(const MyApp());
 }
 
@@ -71,7 +89,10 @@ class MyApp extends StatelessWidget {
       routes: {
         '/login': (context) => LoginPage(),
         '/register': (context) => RegisterPage(),
-        '/home': (context) => HomePage(),
+        '/home': (context) {
+          final email = ModalRoute.of(context)?.settings.arguments;
+          return HomePage(email: email is String ? email : '');
+        },
         '/chat-intro': (context) => const ChatIntroPage(),
         '/chat': (context) => const ChatPage(),
       },

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -150,14 +151,45 @@ class _RegisterPageState extends State<RegisterPage> {
                       SizedBox(
                         height: 52,
                         child: FilledButton.icon(
-                          onPressed: () {
+                          onPressed: () async {
                             if (_formKey.currentState!.validate()) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Inscription en cours'),
-                                ),
-                              );
-                              Navigator.pushNamed(context, '/login');
+                              try {
+                                await Supabase.instance.client.auth.signUp(
+                                  email: _emailController.text.trim(),
+                                  password: _passwordController.text,
+                                );
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Compte créé. Confirmez votre e-mail si demandé.',
+                                    ),
+                                  ),
+                                );
+                                Navigator.pushNamedAndRemoveUntil(
+                                  context,
+                                  '/login',
+                                  (route) => false,
+                                );
+                              } on AuthException catch (error) {
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(error.message),
+                                    backgroundColor: const Color(0xFF8A2821),
+                                  ),
+                                );
+                              } catch (_) {
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Impossible de créer le compte Supabase.',
+                                    ),
+                                    backgroundColor: Color(0xFF8A2821),
+                                  ),
+                                );
+                              }
                             }
                           },
                           icon: const Icon(Icons.person_add_alt_1),
